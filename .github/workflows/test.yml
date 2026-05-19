@@ -1,0 +1,22 @@
+name: Test Action
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test-download:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run ganglia-action (self-test)
+        uses: ./
+        continue-on-error: true
+        with:
+          base: ${{ github.event.pull_request.base.sha || github.event.before }}
+          head: ${{ github.event.pull_request.head.sha || github.sha }}
+          upload-artifact: 'false'

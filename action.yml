@@ -1,0 +1,149 @@
+name: Ganglia
+description: Structural PR impact reports powered by Ganglia
+author: ganglia-tools
+
+branding:
+  icon: git-pull-request
+  color: gray-dark
+
+inputs:
+  command:
+    description: Ganglia subcommand to run (only "analyze" is supported in v1)
+    required: false
+    default: analyze
+  base:
+    description: Base commit SHA for the diff
+    required: false
+    default: ${{ github.event.pull_request.base.sha }}
+  head:
+    description: Head commit SHA for the diff
+    required: false
+    default: ${{ github.event.pull_request.head.sha }}
+  format:
+    description: Primary output format (json or markdown)
+    required: false
+    default: json
+  gng-version:
+    description: Version of the gng binary to download (minimum v0.9.95)
+    required: false
+    default: v0.9.95
+  max-callers:
+    description: Maximum number of callers to report per symbol
+    required: false
+    default: '5'
+  impact-depth:
+    description: Call-graph depth for impact analysis
+    required: false
+    default: '2'
+  upload-artifact:
+    description: Upload JSON and Markdown reports as workflow artifacts
+    required: false
+    default: 'true'
+  comment-pr:
+    description: >
+      Reserved for future use. When true, the Ganglia GitHub App posts a structured
+      PR comment. Set to false in v1 — the App handles comments officially.
+    required: false
+    default: 'false'
+
+outputs:
+  report-json-path:
+    description: Path to the JSON impact report
+    value: ${{ steps.paths.outputs.json }}
+  report-md-path:
+    description: Path to the Markdown impact report
+    value: ${{ steps.paths.outputs.md }}
+  risk-level:
+    description: Risk level extracted from the JSON report (low|medium|high)
+    value: ${{ steps.extract.outputs.risk }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate version
+      shell: bash
+      run: |
+        VERSION="${{ inputs.gng-version }}"
+        MINIMUM="v0.9.95"
+        # Simple lexicographic check — tags are zero-padded patch numbers so this works
+        if [[ "$VERSION" < "$MINIMUM" ]] && [[ "$VERSION" != "$MINIMUM" ]]; then
+          echo "::warning::gng-version $VERSION is older than the minimum supported version $MINIMUM. 'analyze --pr' may not be available."
+        fi
+
+    - name: Set report paths
+      id: paths
+      shell: bash
+      run: |
+        echo "json=$RUNNER_TEMP/ganglia-report.json" >> "$GITHUB_OUTPUT"
+        echo "md=$RUNNER_TEMP/ganglia-report.md" >> "$GITHUB_OUTPUT"
+
+    - name: Download gng binary
+      shell: bash
+      run: |
+        VERSION="${{ inputs.gng-version }}"
+        CACHE_DIR="$RUNNER_TOOL_CACHE/gng/$VERSION"
+        GNG_BIN="$CACHE_DIR/gng"
+
+        if [[ -x "$GNG_BIN" ]]; then
+          echo "Using cached binary at $GNG_BIN"
+        else
+          mkdir -p "$CACHE_DIR"
+          TARBALL="gng-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          URL="https://github.com/Mostafa-M-Hussein/ganglia/releases/download/${VERSION}/${TARBALL}"
+          echo "Downloading $URL"
+          curl -fsSL "$URL" -o "$RUNNER_TEMP/gng.tar.gz"
+          tar -xzf "$RUNNER_TEMP/gng.tar.gz" -C "$CACHE_DIR" --strip-components=0
+          # Binary may be nested; find it
+          BIN_PATH=$(find "$CACHE_DIR" -type f -name 'gng' | head -1)
+          if [[ -z "$BIN_PATH" ]]; then
+            echo "::error::gng binary not found in archive"
+            exit 1
+          fi
+          mv "$BIN_PATH" "$GNG_BIN"
+          chmod +x "$GNG_BIN"
+        fi
+
+        echo "$CACHE_DIR" >> "$GITHUB_PATH"
+
+    - name: Run gng analyze (JSON)
+      shell: bash
+      run: |
+        gng analyze --pr \
+          --base "${{ inputs.base }}" \
+          --head "${{ inputs.head }}" \
+          --format json \
+          --max-callers "${{ inputs.max-callers }}" \
+          --impact-depth "${{ inputs.impact-depth }}" \
+          > "$RUNNER_TEMP/ganglia-report.json"
+
+    - name: Run gng analyze (Markdown)
+      shell: bash
+      run: |
+        gng analyze --pr \
+          --base "${{ inputs.base }}" \
+          --head "${{ inputs.head }}" \
+          --format markdown \
+          --max-callers "${{ inputs.max-callers }}" \
+          --impact-depth "${{ inputs.impact-depth }}" \
+          > "$RUNNER_TEMP/ganglia-report.md"
+
+    - name: Write step summary
+      shell: bash
+      run: cat "$RUNNER_TEMP/ganglia-report.md" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Extract risk level
+      id: extract
+      shell: bash
+      run: |
+        RISK=$(jq -r '.risk // "unknown"' "$RUNNER_TEMP/ganglia-report.json" 2>/dev/null || echo "unknown")
+        echo "risk=$RISK" >> "$GITHUB_OUTPUT"
+
+    - name: Upload artifacts
+      if: inputs.upload-artifact == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ganglia-report
+        path: |
+          ${{ runner.temp }}/ganglia-report.json
+          ${{ runner.temp }}/ganglia-report.md
+        if-no-files-found: warn

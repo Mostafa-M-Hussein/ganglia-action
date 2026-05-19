@@ -1,0 +1,11 @@
+name: Ganglia
+on:
+  pull_request:
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ganglia-tools/ganglia-action@v1
