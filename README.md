@@ -34,7 +34,7 @@ jobs:
 | `base` | PR base SHA | Base commit SHA for the diff. |
 | `head` | PR head SHA | Head commit SHA for the diff. |
 | `format` | `json` | Primary output format (`json` or `markdown`). Both formats are always written. |
-| `gng-version` | `v0.9.95` | Version of the `gng` binary to download. Must be >= v0.9.95. |
+| `gng-version` | `v0.9.95` | Version of the `gng` binary to download. Must be >= v0.9.100 (older releases lack the test-gap + breaking-change fields). |
 | `max-callers` | `5` | Maximum callers reported per symbol. |
 | `impact-depth` | `2` | Call-graph depth for impact traversal. |
 | `upload-artifact` | `true` | Upload JSON and Markdown reports as workflow artifacts. |
