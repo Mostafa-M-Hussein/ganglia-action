@@ -38,6 +38,7 @@ jobs:
 | `max-callers` | `5` | Maximum callers reported per symbol. |
 | `impact-depth` | `2` | Call-graph depth for impact traversal. |
 | `upload-artifact` | `true` | Upload JSON and Markdown reports as workflow artifacts. |
+| `verify-provenance` | `false` | Verify the downloaded `gng` binary against its SLSA build provenance attestation. Requires `gng-version >= v1.0.0`. Soft-fails with a warning on older versions. |
 | `comment-pr` | `false` | Reserved for future use (Ganglia GitHub App handles PR comments). |
 
 ## Outputs
@@ -83,6 +84,27 @@ jobs:
 | Runs in your runner | Yes | No (SaaS) | No (SaaS) |
 | Speed | < 30s | 1–3 min | Varies |
 | Cost | Binary download | Per-seat SaaS | Per-seat SaaS |
+
+## Supply-chain security
+
+For security-conscious orgs, pin to a commit SHA instead of `@v1`:
+
+```yaml
+- uses: ganglia-tools/ganglia-action@8a660ad   # gng v0.9.97
+```
+
+The `@v1` floating tag updates whenever a new minor releases — convenient but unaudited. SHA-pinning blocks any future change from running in your CI without an explicit version bump in your workflow.
+
+For end-to-end verification (action + binary), use SHA-pinning **plus** `verify-provenance`:
+
+```yaml
+- uses: ganglia-tools/ganglia-action@8a660ad
+  with:
+    gng-version: v1.0.0  # or later
+    verify-provenance: 'true'
+```
+
+This guarantees both the wrapper and the engine binary match what was built in CI by the upstream `Release` workflow, anchored on the GitHub OIDC trust root via [Sigstore](https://www.sigstore.dev/).
 
 ## Platform support
 

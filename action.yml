@@ -39,6 +39,15 @@ inputs:
     description: Upload JSON and Markdown reports as workflow artifacts
     required: false
     default: 'true'
+  verify-provenance:
+    description: >
+      Verify the downloaded gng binary against its SLSA build provenance
+      attestation. Requires gng-version >= v1.0.0 (earlier versions were
+      published before attestations were wired in). Soft-fails on older
+      versions with a warning. Default false to keep the Action usable
+      against the current 0.9.x line.
+    required: false
+    default: 'false'
   comment-pr:
     description: >
       Reserved for future use. When true, the Ganglia GitHub App posts a structured
@@ -60,12 +69,20 @@ outputs:
 runs:
   using: composite
   steps:
+    # All `${{ inputs.* }}` flows through env vars rather than direct
+    # template interpolation into bash. Eliminates the GitHub Actions
+    # script-injection class: a user invoking this action from a
+    # pull_request_target workflow could otherwise control inputs via
+    # fork PRs and execute arbitrary shell.
     - name: Validate version
       shell: bash
+      env:
+        INPUT_GNG_VERSION: ${{ inputs.gng-version }}
       run: |
-        VERSION="${{ inputs.gng-version }}"
+        VERSION="$INPUT_GNG_VERSION"
         MINIMUM="v0.9.95"
-        # Simple lexicographic check — tags are zero-padded patch numbers so this works
+        # Lexicographic check — works for 0.x.x patches but will need real
+        # semver comparison once we cross v0.10.x or v1.x.
         if [[ "$VERSION" < "$MINIMUM" ]] && [[ "$VERSION" != "$MINIMUM" ]]; then
           echo "::warning::gng-version $VERSION is older than the minimum supported version $MINIMUM. 'analyze --pr' may not be available."
         fi
@@ -75,12 +92,14 @@ runs:
       shell: bash
       run: |
         echo "json=$RUNNER_TEMP/ganglia-report.json" >> "$GITHUB_OUTPUT"
-        echo "md=$RUNNER_TEMP/ganglia-report.md" >> "$GITHUB_OUTPUT"
+        echo "md=$RUNNER_TEMP/ganglia-report.md"   >> "$GITHUB_OUTPUT"
 
     - name: Download gng binary
       shell: bash
+      env:
+        INPUT_GNG_VERSION: ${{ inputs.gng-version }}
       run: |
-        VERSION="${{ inputs.gng-version }}"
+        VERSION="$INPUT_GNG_VERSION"
         CACHE_DIR="$RUNNER_TOOL_CACHE/gng/$VERSION"
         GNG_BIN="$CACHE_DIR/gng"
 
@@ -93,7 +112,7 @@ runs:
           echo "Downloading $URL"
           curl -fsSL "$URL" -o "$RUNNER_TEMP/gng.tar.gz"
           tar -xzf "$RUNNER_TEMP/gng.tar.gz" -C "$CACHE_DIR" --strip-components=0
-          # Binary may be nested; find it
+          # Binary may be nested; find it.
           BIN_PATH=$(find "$CACHE_DIR" -type f -name 'gng' | head -1)
           if [[ -z "$BIN_PATH" ]]; then
             echo "::error::gng binary not found in archive"
@@ -105,26 +124,61 @@ runs:
 
         echo "$CACHE_DIR" >> "$GITHUB_PATH"
 
+    # Opt-in supply-chain check: verify the downloaded binary against
+    # its SLSA v1 attestation from the upstream repo. Soft-fails on
+    # pre-attestation versions so users on 0.9.x can still adopt the
+    # input as a flag without breaking.
+    - name: Verify build provenance
+      if: inputs.verify-provenance == 'true'
+      shell: bash
+      env:
+        INPUT_GNG_VERSION: ${{ inputs.gng-version }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        VERSION="$INPUT_GNG_VERSION"
+        GNG_BIN="$RUNNER_TOOL_CACHE/gng/$VERSION/gng"
+        # 0.9.x predates attestation wiring — warn and skip.
+        if [[ "$VERSION" < "v1.0.0" ]] && [[ "$VERSION" != "v1.0.0" ]]; then
+          echo "::warning::Provenance verification skipped — gng-version $VERSION predates v1.0.0 attestations."
+          exit 0
+        fi
+        if ! command -v gh >/dev/null 2>&1; then
+          echo "::warning::gh CLI not available on this runner; skipping provenance verify."
+          exit 0
+        fi
+        echo "Verifying $GNG_BIN against attestation in Mostafa-M-Hussein/ganglia"
+        gh attestation verify "$GNG_BIN" --repo Mostafa-M-Hussein/ganglia
+
     - name: Run gng analyze (JSON)
       shell: bash
+      env:
+        INPUT_BASE: ${{ inputs.base }}
+        INPUT_HEAD: ${{ inputs.head }}
+        INPUT_MAX_CALLERS: ${{ inputs.max-callers }}
+        INPUT_IMPACT_DEPTH: ${{ inputs.impact-depth }}
       run: |
         gng analyze --pr \
-          --base "${{ inputs.base }}" \
-          --head "${{ inputs.head }}" \
+          --base "$INPUT_BASE" \
+          --head "$INPUT_HEAD" \
           --format json \
-          --max-callers "${{ inputs.max-callers }}" \
-          --impact-depth "${{ inputs.impact-depth }}" \
+          --max-callers "$INPUT_MAX_CALLERS" \
+          --impact-depth "$INPUT_IMPACT_DEPTH" \
           > "$RUNNER_TEMP/ganglia-report.json"
 
     - name: Run gng analyze (Markdown)
       shell: bash
+      env:
+        INPUT_BASE: ${{ inputs.base }}
+        INPUT_HEAD: ${{ inputs.head }}
+        INPUT_MAX_CALLERS: ${{ inputs.max-callers }}
+        INPUT_IMPACT_DEPTH: ${{ inputs.impact-depth }}
       run: |
         gng analyze --pr \
-          --base "${{ inputs.base }}" \
-          --head "${{ inputs.head }}" \
+          --base "$INPUT_BASE" \
+          --head "$INPUT_HEAD" \
           --format markdown \
-          --max-callers "${{ inputs.max-callers }}" \
-          --impact-depth "${{ inputs.impact-depth }}" \
+          --max-callers "$INPUT_MAX_CALLERS" \
+          --impact-depth "$INPUT_IMPACT_DEPTH" \
           > "$RUNNER_TEMP/ganglia-report.md"
 
     - name: Write step summary
@@ -135,7 +189,7 @@ runs:
       id: extract
       shell: bash
       run: |
-        RISK=$(jq -r '.risk // "unknown"' "$RUNNER_TEMP/ganglia-report.json" 2>/dev/null || echo "unknown")
+        RISK=$(jq -r '.risk.level // "unknown"' "$RUNNER_TEMP/ganglia-report.json" 2>/dev/null || echo "unknown")
         echo "risk=$RISK" >> "$GITHUB_OUTPUT"
 
     - name: Upload artifacts
